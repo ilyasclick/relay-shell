@@ -108,5 +108,17 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await gateway.write_file("test-linux", "/tmp/fixture", "data", "unsupported")
 
+class BackendHealthTests(unittest.TestCase):
+    def test_timeout_and_denial_are_offline(self):
+        self.assertFalse(gateway._backend_healthy("[TIMEOUT after 20s]"))
+        self.assertFalse(gateway._backend_healthy("[DENIED tier 2 (STATEFUL)]"))
+        self.assertFalse(gateway._backend_healthy("[ERROR backend unavailable]"))
+        self.assertFalse(gateway._backend_healthy("[exit 255]\nPermission denied"))
+
+    def test_success_is_online(self):
+        self.assertTrue(gateway._backend_healthy("[exit 0]\nserver ready"))
+        self.assertTrue(gateway._backend_healthy("relay-shell ready"))
+
+
 if __name__ == "__main__":
     unittest.main()

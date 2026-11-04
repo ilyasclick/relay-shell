@@ -251,6 +251,15 @@ def _parse_exec(result: str) -> tuple[int | None, str]:
     return (int(m.group(1)), result[m.end():]) if m else (None, result)
 
 
+def _backend_healthy(result: str) -> bool:
+    """Treat relay sentinel failures as offline, not successful transport."""
+    response = result.lstrip()
+    if response.startswith(("[TIMEOUT", "[ERROR", "[DENIED", "[exit -", "[exit 1", "[exit 2", "[exit 3")):
+        return False
+    exit_code, _ = _parse_exec(response)
+    return exit_code in (None, 0)
+
+
 def _parse_session_id(result: str) -> str:
     m = re.search(r"\bsession\s+([A-Za-z0-9_-]+)\s+started\b", result)
     if not m:
@@ -296,8 +305,8 @@ async def list_devices() -> list[dict[str, Any]]:
     for device_id in tenant.get("devices", []):
         dev = reg["devices"][device_id]
         try:
-            await _backend_call(dev, "server_info", {})
-            online = True
+            probe = await _backend_call(dev, "server_info", {})
+            online = _backend_healthy(probe)
         except Exception:
             online = False
         out.append({
@@ -316,7 +325,7 @@ async def device_status(device_id: str) -> dict[str, Any]:
     dev = _device_for(reg, tenant, device_id)
     try:
         info = await _backend_call(dev, "server_info", {})
-        online = True
+        online = _backend_healthy(info)
     except Exception as exc:
         info, online = str(exc), False
     _audit("device_status", tenant_id, client_id, device_id, "ok" if online else "offline")
