@@ -43,6 +43,27 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(calls), 2)
         self.assertTrue(all(size <= 32768 for _, size in calls))
 
+    async def test_local_large_read_uses_bounded_chunks(self):
+        import json
+        data = b"B" * 75000
+        calls = []
+        self.device["backend_type"] = "relay-local"
+
+        async def fake_backend(_device, tool, arguments):
+            self.assertEqual(tool, "shell_exec")
+            env = json.loads(arguments["env_json"])
+            offset, size = int(env["RDCX_OFFSET"]), int(env["RDCX_SIZE"])
+            self.assertEqual(env["RDCX_PATH"], "/tmp/fixture")
+            calls.append((offset, size))
+            return "[exit 0]\n" + base64.b64encode(data[offset:offset + size]).decode() + "\n"
+
+        with patch.object(gateway, "_backend_call", new=fake_backend):
+            result = await gateway.read_file("test-linux", "/tmp/fixture", 80000)
+        self.assertEqual(result["content"], data.decode())
+        self.assertFalse(result["truncated"])
+        self.assertGreater(len(calls), 2)
+        self.assertTrue(all(size <= 32768 for _, size in calls))
+
     async def test_read_detects_truncation(self):
         async def fake_backend(_device, _tool, _arguments):
             return "[exit 0]\n" + base64.b64encode(b"abcdef").decode() + "\n"

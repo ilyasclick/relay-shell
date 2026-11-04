@@ -532,6 +532,42 @@ async def read_file(device_id: str, path: str, max_bytes: int = MAX_FILE_BYTES) 
             "content": collected[:limit].decode("utf-8", errors="replace"),
             "truncated": len(collected) > limit,
         }
+    elif dev.get("backend_type") == "relay-local":
+        collected = bytearray()
+        while len(collected) <= limit:
+            chunk_size = min(32768, limit + 1 - len(collected))
+            code = (
+                "import os,base64; p=os.environ['RDCX_PATH']; "
+                "o=int(os.environ['RDCX_OFFSET']); n=int(os.environ['RDCX_SIZE']); "
+                "f=open(p,'rb'); f.seek(o); data=f.read(n); f.close(); "
+                "print(base64.b64encode(data).decode())"
+            )
+            result = await _backend_call(dev, "shell_exec", {
+                "command": f"python3 -c {shlex.quote(code)}",
+                "env_json": json.dumps({
+                    "RDCX_PATH": path,
+                    "RDCX_OFFSET": str(len(collected)),
+                    "RDCX_SIZE": str(chunk_size),
+                }),
+                "timeout": 30,
+            })
+            exit_code, output = _parse_exec(result)
+            if exit_code != 0:
+                _audit("read_file", tenant_id, client_id, device_id, "error", exit_code)
+                return {"device_id": device_id, "path": path, "exit_code": exit_code, "error": output}
+            lines = output.splitlines()
+            chunk = base64.b64decode(lines[0], validate=True) if lines and lines[0] else b""
+            if len(chunk) > chunk_size:
+                raise RuntimeError("local file read exceeded chunk size")
+            collected.extend(chunk)
+            if len(chunk) < chunk_size:
+                break
+        _audit("read_file", tenant_id, client_id, device_id, "ok", 0)
+        return {
+            "device_id": device_id, "path": path,
+            "content": collected[:limit].decode("utf-8", errors="replace"),
+            "truncated": len(collected) > limit,
+        }
     elif dev.get("shell_kind") == "powershell":
         escaped = path.replace("'", "''")
         code = (
