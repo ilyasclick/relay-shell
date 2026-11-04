@@ -1,0 +1,36 @@
+name: RDCX Gateway Security and Regression
+on:
+  push:
+    branches: [rdcx-gate-hardening]
+    paths: ['integrations/rdcx_gateway/**', '.github/workflows/rdcx-gateway.yml']
+  pull_request:
+    paths: ['integrations/rdcx_gateway/**', '.github/workflows/rdcx-gateway.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan complete Git history
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install upstream package and test dependencies
+        run: python -m pip install -e .
+      - name: Run RDCX Gateway regression tests
+        run: python -m unittest discover -s integrations/rdcx_gateway/tests -v
