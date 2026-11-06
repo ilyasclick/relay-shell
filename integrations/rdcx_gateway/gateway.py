@@ -568,6 +568,10 @@ async def confirm_elevated(token: str) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
         raise ValueError("invalid confirmation token format")
     client_id, tenant_id, _tenant = await _principal()
+    if AUTH_ENABLED and not AUTH_SINGLE_CLIENT:
+        # The shared admin relay cannot verify the original OAuth principal.
+        _audit("confirm_elevated", tenant_id, client_id, None, "denied")
+        raise PermissionError("Tier-3 confirmation requires client-bound admin relay identity")
     admin_url = os.getenv("RDCX_GATEWAY_ADMIN_BACKEND_URL", "http://127.0.0.1:8792/mcp")
     try:
         async with Client(admin_url) as client:
