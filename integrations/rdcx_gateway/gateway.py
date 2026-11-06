@@ -618,7 +618,7 @@ async def write_file_bytes(device_id: str, path: str, content_base64: str, mode:
                 "if($old -ne $expected){throw 'precondition mismatch'}}; "
                 "if($mode -eq 'append'){$f=[IO.File]::Open($p,[IO.FileMode]::Append,[IO.FileAccess]::Write); "
                 "try{$f.Write($d,0,$d.Length)}finally{$f.Dispose()}} "
-                "else{if([IO.File]::Exists($p)){[IO.File]::Delete($p)}; [IO.File]::Move($t,$p)}; "
+                "else{if([IO.File]::Exists($p)){[IO.File]::Replace($t,$p,$null)}else{[IO.File]::Move($t,$p)}}; "
                 "Write-Output ('RDCX_WRITTEN=' + $d.Length)"
             )
             command = _powershell_encoded(script) if dev.get("shell_kind") == "cmd" else script
