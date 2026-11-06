@@ -530,7 +530,7 @@ async def read_file_bytes(device_id: str, path: str, offset: int = 0, max_bytes:
     client_id, tenant_id, tenant = await _principal()
     dev = _device_for(_registry(), tenant, device_id, "files")
     validate_range(offset, max_bytes)
-    if not isinstance(path, str) or not path or "\\x00" in path:
+    if not isinstance(path, str) or not path or "\x00" in path:
         raise ValueError("invalid file path")
     try:
         if dev.get("shell_kind") in {"cmd", "powershell"}:
@@ -576,7 +576,7 @@ async def write_file_bytes(device_id: str, path: str, content_base64: str, mode:
     dev = _device_for(_registry(), tenant, device_id, "files")
     if mode not in {"rewrite", "append"}:
         raise ValueError("invalid write mode")
-    if not isinstance(path, str) or not path or "\\x00" in path:
+    if not isinstance(path, str) or not path or "\x00" in path:
         raise ValueError("invalid file path")
     data = decode_payload(content_base64)
     if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
@@ -618,7 +618,7 @@ async def write_file_bytes(device_id: str, path: str, content_base64: str, mode:
                 "if($old -ne $expected){throw 'precondition mismatch'}}; "
                 "if($mode -eq 'append'){$f=[IO.File]::Open($p,[IO.FileMode]::Append,[IO.FileAccess]::Write); "
                 "try{$f.Write($d,0,$d.Length)}finally{$f.Dispose()}} "
-                "else{[IO.File]::Move($t,$p,$true)}; "
+                "else{if([IO.File]::Exists($p)){[IO.File]::Delete($p)}; [IO.File]::Move($t,$p)}; "
                 "Write-Output ('RDCX_WRITTEN=' + $d.Length)"
             )
             command = _powershell_encoded(script) if dev.get("shell_kind") == "cmd" else script
