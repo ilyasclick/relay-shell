@@ -79,7 +79,7 @@ class BinaryGatewayTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_write_fail_closed_without_remote_side_effects(self):
-        payload = base64.b64encode(b"\\x00\\xff").decode()
+        payload = base64.b64encode(bytes([0, 255])).decode()
         with patch.object(gateway, "_backend_call", new=AsyncMock()) as backend:
             for kind in ("posix", "cmd", "powershell"):
                 self.device["shell_kind"] = kind
