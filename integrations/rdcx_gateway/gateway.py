@@ -9,6 +9,8 @@ import secrets
 import shlex
 import time
 from pathlib import Path
+import hashlib
+from integrations.rdcx_gateway.binary_files import CHUNK_LIMIT, decode_payload, validate_range, parse_read_response
 from typing import Any
 
 from mcp import Client
@@ -519,6 +521,145 @@ async def session_close(session_id: str) -> dict[str, Any]:
         _save_json(SESSIONS_PATH, sessions)
     _audit("session_close", tenant_id, client_id, rec["device_id"], "ok")
     return {"session_id": session_id, "result": result}
+
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
+async def read_file_bytes(device_id: str, path: str, offset: int = 0, max_bytes: int = 32768) -> dict[str, Any]:
+    """Read an exact binary range with tenant ACL and a bounded backend response."""
+    client_id, tenant_id, tenant = await _principal()
+    dev = _device_for(_registry(), tenant, device_id, "files")
+    validate_range(offset, max_bytes)
+    if not isinstance(path, str) or not path or "\\x00" in path:
+        raise ValueError("invalid file path")
+    try:
+        if dev.get("shell_kind") in {"cmd", "powershell"}:
+            escaped = path.replace("'", "''")
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$p='{escaped}'; $o={offset}; $n={max_bytes}; "
+                "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite); "
+                "try{$null=$f.Seek($o,[IO.SeekOrigin]::Begin); "
+                "$buf=New-Object byte[] ($n+1); $k=$f.Read($buf,0,$buf.Length); "
+                "$take=[Math]::Min($k,$n); $out=New-Object byte[] $take; "
+                "[Array]::Copy($buf,$out,$take); "
+                "[Console]::WriteLine([Convert]::ToBase64String($out)); "
+                "[Console]::WriteLine('TRUNCATED=' + [int]($k -gt $n))}finally{$f.Dispose()}"
+            )
+            command = _powershell_encoded(script) if dev.get("shell_kind") == "cmd" else script
+            args = {"command": command, "timeout": 30}
+        else:
+            script = (
+                "import base64,sys; p=sys.argv[1]; o=int(sys.argv[2]); n=int(sys.argv[3]); "
+                "f=open(p,'rb'); f.seek(o); d=f.read(n+1); f.close(); "
+                "print(base64.b64encode(d[:n]).decode('ascii')); "
+                "print('TRUNCATED='+str(int(len(d)>n)))"
+            )
+            command = f"python3 -c {shlex.quote(script)} {shlex.quote(path)} {offset} {max_bytes}"
+            args = {"command": command, "timeout": 30}
+        result = await _backend_call(dev, "shell_exec", args)
+        code, output = _parse_exec(result)
+        if code != 0 or result.startswith(("[ERROR", "[DENIED", "[TIMEOUT")):
+            raise RuntimeError("remote binary read failed")
+        payload = parse_read_response(output, max_bytes)
+        _audit("read_file_bytes", tenant_id, client_id, device_id, "ok")
+        return {"device_id": device_id, "path": path, "offset": offset, **payload}
+    except Exception:
+        _audit("read_file_bytes", tenant_id, client_id, device_id, "error")
+        raise
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
+async def write_file_bytes(device_id: str, path: str, content_base64: str, mode: str = "rewrite", expected_sha256: str | None = None) -> dict[str, Any]:
+    """Write one exact binary chunk, with hash precondition and staging cleanup."""
+    client_id, tenant_id, tenant = await _principal()
+    dev = _device_for(_registry(), tenant, device_id, "files")
+    if mode not in {"rewrite", "append"}:
+        raise ValueError("invalid write mode")
+    if not isinstance(path, str) or not path or "\\x00" in path:
+        raise ValueError("invalid file path")
+    data = decode_payload(content_base64)
+    if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("invalid expected_sha256")
+    digest = hashlib.sha256(data).hexdigest()
+    tmp = SPOOL_DIR / ("binary-" + secrets.token_hex(16))
+    remote_tmp = path + ".rdcx-" + secrets.token_hex(16)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        windows = dev.get("shell_kind") in {"cmd", "powershell"}
+        if dev.get("backend_type") == "relay-local":
+            raise NotImplementedError("binary writes to relay-local require a dedicated staging backend")
+        if dev.get("backend_type") != "relay-ssh":
+            raise NotImplementedError("binary writes require an SSH file backend")
+        transfer_path = ("/" + remote_tmp.replace("\\", "/")
+                         if windows and re.match(r"^[A-Za-z]:\\", remote_tmp) else remote_tmp)
+        result = await _backend_call(dev, "ssh_upload", {
+            "local_path": str(tmp), "remote_path": transfer_path, "timeout": 45,
+        })
+        code, output = _parse_exec(result)
+        if code not in (None, 0) or result.startswith(("[ERROR", "[DENIED", "[TIMEOUT")):
+            raise RuntimeError("binary staging upload failed")
+        if windows:
+            p = path.replace("'", "''")
+            t = remote_tmp.replace("'", "''")
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$p='{p}'; $t='{t}'; $mode='{mode}'; $expected='{expected_sha256 or ''}'; "
+                "if([IO.File]::GetAttributes($t).HasFlag([IO.FileAttributes]::ReparsePoint)){throw 'staging reparse point'}; "
+                "$d=[IO.File]::ReadAllBytes($t); "
+                f"if($d.Length -ne {len(data)}){{throw 'length mismatch'}}; "
+                "$h=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($d))).Replace('-','').ToLowerInvariant(); "
+                f"if($h -ne '{digest}'){{throw 'digest mismatch'}}; "
+                "if([IO.File]::Exists($p) -and [IO.File]::GetAttributes($p).HasFlag([IO.FileAttributes]::ReparsePoint)){throw 'destination reparse point'}; "
+                "if($expected){if(-not [IO.File]::Exists($p)){throw 'precondition missing'}; "
+                "$old=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($p)))).Replace('-','').ToLowerInvariant(); "
+                "if($old -ne $expected){throw 'precondition mismatch'}}; "
+                "if($mode -eq 'append'){$f=[IO.File]::Open($p,[IO.FileMode]::Append,[IO.FileAccess]::Write); "
+                "try{$f.Write($d,0,$d.Length)}finally{$f.Dispose()}} "
+                "else{[IO.File]::Move($t,$p,$true)}; "
+                "Write-Output ('RDCX_WRITTEN=' + $d.Length)"
+            )
+            command = _powershell_encoded(script) if dev.get("shell_kind") == "cmd" else script
+        else:
+            script = (
+                "import hashlib,os,sys,stat; p,t,mode,expected,digest,n=sys.argv[1:]; "
+                "st=os.lstat(t); "
+                "assert stat.S_ISREG(st.st_mode) and not os.path.islink(t); "
+                "d=open(t,'rb').read(32769); "
+                "assert len(d)==int(n) and hashlib.sha256(d).hexdigest()==digest; "
+                "assert not os.path.islink(p); "
+                "assert not expected or (os.path.isfile(p) and hashlib.sha256(open(p,'rb').read()).hexdigest()==expected); "
+                "f=open(p,'ab') if mode=='append' else None; "
+                "f.write(d) if f else os.replace(t,p); "
+                "f.close() if f else None; "
+                "print('RDCX_WRITTEN='+str(len(d)))"
+            )
+            command = "python3 -c " + shlex.quote(script) + " " + " ".join(
+                shlex.quote(x) for x in (path, remote_tmp, mode, expected_sha256 or "", digest, str(len(data)))
+            )
+        try:
+            result = await _backend_call(dev, "shell_exec", {"command": command, "timeout": 45})
+            code, output = _parse_exec(result)
+            if code != 0 or result.startswith(("[ERROR", "[DENIED", "[TIMEOUT")) or output.strip() != f"RDCX_WRITTEN={len(data)}":
+                raise RuntimeError("binary write not acknowledged; inspect remote state before retry")
+        finally:
+            if windows:
+                cleanup = _powershell_encoded(f"Remove-Item -LiteralPath '{remote_tmp.replace(chr(39), chr(39)*2)}' -Force -ErrorAction SilentlyContinue")
+            else:
+                cleanup = "rm -f -- " + shlex.quote(remote_tmp)
+            try:
+                await _backend_call(dev, "shell_exec", {"command": cleanup, "timeout": 15})
+            except Exception:
+                pass
+        _audit("write_file_bytes", tenant_id, client_id, device_id, "ok")
+        return {"device_id": device_id, "path": path, "bytes_written": len(data), "content_sha256": digest, "mode": mode, "retry_safe": False}
+    except Exception:
+        _audit("write_file_bytes", tenant_id, client_id, device_id, "error")
+        raise
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
