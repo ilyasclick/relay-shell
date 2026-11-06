@@ -905,8 +905,40 @@ async def write_file(
     if len(data) > max_write:
         raise ValueError(f"content exceeds {max_write} bytes for this device")
     if dev.get("backend_type") == "relay-ssh" and dev.get("shell_kind") == "cmd":
-        if mode != "rewrite":
-            raise ValueError("append mode is not supported for SSH file transfer")
+        if mode == "append":
+            if any(ch in path for ch in '"&|<>^%!'):
+                raise ValueError("Windows path contains unsupported shell metacharacters")
+            if len(data) > 4096:
+                raise ValueError("Windows append is limited to 4096 UTF-8 bytes per call")
+            escaped_path = path.replace("'", "''")
+            encoded_data = base64.b64encode(data).decode("ascii")
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$p='{escaped_path}'; "
+                f"$d=[Convert]::FromBase64String('{encoded_data}'); "
+                "$f=[IO.File]::Open($p,[IO.FileMode]::Append,[IO.FileAccess]::Write); "
+                "try{$f.Write($d,0,$d.Length)}finally{$f.Dispose()}; "
+                "Write-Output ('RDCX_APPENDED=' + $d.Length)"
+            )
+            result = await _backend_call(
+                dev,
+                "shell_exec",
+                {"command": _powershell_encoded(script), "timeout": 30},
+            )
+            exit_code, output = _parse_exec(result)
+            if exit_code != 0 or result.startswith(("[ERROR", "[DENIED", "[TIMEOUT")):
+                _audit("write_file", tenant_id, client_id, device_id, "error", exit_code)
+                raise RuntimeError(output or result)
+            if output.splitlines().count(f"RDCX_APPENDED={len(data)}") != 1:
+                _audit("write_file", tenant_id, client_id, device_id, "error", exit_code)
+                raise RuntimeError("Windows append did not return a verified byte count")
+            _audit("write_file", tenant_id, client_id, device_id, "ok", 0)
+            return {
+                "device_id": device_id,
+                "path": path,
+                "exit_code": 0,
+                "result": result,
+            }
         tmp = SPOOL_DIR / ("upload-" + secrets.token_hex(12))
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o660)
         try:
