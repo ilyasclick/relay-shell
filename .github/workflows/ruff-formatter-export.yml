@@ -2,6 +2,8 @@ name: Ruff formatter export
 on:
   push:
     branches: [rdcx-ruff-format-20261106]
+  pull_request:
+    branches: [rdcx-gate-hardening]
 permissions:
   contents: read
 jobs:
