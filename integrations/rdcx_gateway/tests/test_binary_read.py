@@ -22,8 +22,13 @@ class BinaryCodecTests(unittest.TestCase):
 
     def test_empty_and_bad_ack(self):
         self.assertEqual(parse_read_response("\nTRUNCATED=0", 1)["bytes_read"], 0)
-        for value in ("", "!!!!\nTRUNCATED=0", "Zg==\nTRUNCATED=maybe",
-                      "Zg==\nTRUNCATED=0\nextra", "Zg==\nTRUNCATED=0"):
+        for value in (
+            "",
+            "!!!!\nTRUNCATED=0",
+            "Zg==\nTRUNCATED=maybe",
+            "Zg==\nTRUNCATED=0\nextra",
+            "Zg==\nTRUNCATED=0",
+        ):
             if value == "Zg==\nTRUNCATED=0":
                 continue
             with self.subTest(value=value), self.assertRaises((ValueError, RuntimeError)):
@@ -99,8 +104,12 @@ class BinaryReadGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_inputs_do_not_call_backend(self):
         with patch.object(gateway, "_backend_call", new=AsyncMock()) as backend:
-            for path, offset, size in (("", 0, 1), ("/tmp/a", -1, 1),
-                                       ("/tmp/a", 0, 32769), ("/tmp/a", (1 << 53) - 1, 1)):
+            for path, offset, size in (
+                ("", 0, 1),
+                ("/tmp/a", -1, 1),
+                ("/tmp/a", 0, 32769),
+                ("/tmp/a", (1 << 53) - 1, 1),
+            ):
                 with self.assertRaises(ValueError):
                     await gateway.read_file_bytes("allowed", path, offset, size)
             backend.assert_not_awaited()
