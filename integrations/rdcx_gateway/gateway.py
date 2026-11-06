@@ -9,6 +9,8 @@ import secrets
 import shlex
 import time
 from pathlib import Path
+import hashlib
+from integrations.rdcx_gateway.binary_files import CHUNK_LIMIT, decode_payload, validate_range, parse_read_response
 from typing import Any
 
 from mcp import Client
@@ -520,6 +522,75 @@ async def session_close(session_id: str) -> dict[str, Any]:
     _audit("session_close", tenant_id, client_id, rec["device_id"], "ok")
     return {"session_id": session_id, "result": result}
 
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
+async def read_file_bytes(device_id: str, path: str, offset: int = 0, max_bytes: int = 32768) -> dict[str, Any]:
+    """Read an exact binary range with tenant ACL and a bounded backend response."""
+    client_id, tenant_id, tenant = await _principal()
+    dev = _device_for(_registry(), tenant, device_id, "files")
+    validate_range(offset, max_bytes)
+    if not isinstance(path, str) or not path or "\x00" in path:
+        raise ValueError("invalid file path")
+    try:
+        if dev.get("shell_kind") in {"cmd", "powershell"}:
+            escaped = path.replace("'", "''")
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$p='{escaped}'; $o={offset}; $n={max_bytes}; "
+                "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite); "
+                "try{$null=$f.Seek($o,[IO.SeekOrigin]::Begin); "
+                "$buf=New-Object byte[] ($n+1); $k=$f.Read($buf,0,$buf.Length); "
+                "$take=[Math]::Min($k,$n); $out=New-Object byte[] $take; "
+                "[Array]::Copy($buf,$out,$take); "
+                "[Console]::WriteLine([Convert]::ToBase64String($out)); "
+                "[Console]::WriteLine('TRUNCATED=' + [int]($k -gt $n))}finally{$f.Dispose()}"
+            )
+            command = _powershell_encoded(script) if dev.get("shell_kind") == "cmd" else script
+            args = {"command": command, "timeout": 30}
+        else:
+            script = (
+                "import base64,sys; p=sys.argv[1]; o=int(sys.argv[2]); n=int(sys.argv[3]); "
+                "f=open(p,'rb'); f.seek(o); d=f.read(n+1); f.close(); "
+                "print(base64.b64encode(d[:n]).decode('ascii')); "
+                "print('TRUNCATED='+str(int(len(d)>n)))"
+            )
+            command = f"python3 -c {shlex.quote(script)} {shlex.quote(path)} {offset} {max_bytes}"
+            args = {"command": command, "timeout": 30}
+        result = await _backend_call(dev, "shell_exec", args)
+        code, output = _parse_exec(result)
+        if code != 0 or result.startswith(("[ERROR", "[DENIED", "[TIMEOUT")):
+            raise RuntimeError("remote binary read failed")
+        payload = parse_read_response(output, max_bytes)
+        _audit("read_file_bytes", tenant_id, client_id, device_id, "ok")
+        return {"device_id": device_id, "path": path, "offset": offset, **payload}
+    except Exception:
+        _audit("read_file_bytes", tenant_id, client_id, device_id, "error")
+        raise
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
+async def write_file_bytes(device_id: str, path: str, content_base64: str, mode: str = "rewrite", expected_sha256: str | None = None) -> dict[str, Any]:
+    """Reject binary mutations until the remote atomic-write contract is verified.
+
+    The previous implementation could leave an uploaded staging file behind,
+    ignore cleanup denial, follow symlink parents, or report ambiguous commits.
+    A rejected request must never reach an execution or upload backend.
+    """
+    client_id, tenant_id, tenant = await _principal()
+    _device_for(_registry(), tenant, device_id, "files")
+    if mode not in {"rewrite", "append"}:
+        raise ValueError("invalid write mode")
+    if not isinstance(path, str) or not path or "\\x00" in path:
+        raise ValueError("invalid file path")
+    decode_payload(content_base64)
+    if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("invalid expected_sha256")
+    _audit("write_file_bytes", tenant_id, client_id, device_id, "blocked_unsafe_backend")
+    raise NotImplementedError(
+        "Binary write disabled: remote staging, nofollow paths, cleanup acknowledgement "
+        "and atomic commit are not security-verified; no backend mutation attempted"
+    )
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
 async def read_file(device_id: str, path: str, max_bytes: int = MAX_FILE_BYTES) -> dict[str, Any]:
