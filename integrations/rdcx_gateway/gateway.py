@@ -47,8 +47,8 @@ def _load_json(path: Path, default: Any) -> Any:
 def _save_json(path: Path, value: Any) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    tmp.chmod(0o600)
+    tmp.replace(path)
 
 
 def _registry() -> dict[str, Any]:
@@ -115,7 +115,10 @@ def _device_for(
 
 def _powershell_encoded(command: str, executable: str = "powershell.exe") -> str:
     payload = base64.b64encode(command.encode("utf-16le")).decode("ascii")
-    return f"{executable} -NoLogo -NoProfile -NonInteractive -InputFormat None -OutputFormat Text -EncodedCommand {payload}"
+    return (
+        f"{executable} -NoLogo -NoProfile -NonInteractive "
+        f"-InputFormat None -OutputFormat Text -EncodedCommand {payload}"
+    )
 
 
 async def _backend_call(device: dict[str, Any], tool: str, arguments: dict[str, Any]) -> str:
@@ -180,7 +183,8 @@ async def _backend_call(device: dict[str, Any], tool: str, arguments: dict[str, 
         elif tool == "session_send":
             data = str(arguments.get("data", ""))
             if not bool(arguments.get("enter", True)) or not re.fullmatch(
-                r"(?:show (?:version|system|interface(?: [A-Za-z0-9_.-]+)?|upnp redirect|device-list|ip arp|ipv6|ssh|sstp-server|\?)|\?|exit)",
+                r"(?:show (?:version|system|interface(?: [A-Za-z0-9_.-]+)?"
+                r"|upnp redirect|device-list|ip arp|ipv6|ssh|sstp-server|\?)|\?|exit)",
                 data,
             ):
                 raise PermissionError("router CLI is restricted to read-only diagnostics")
@@ -256,7 +260,7 @@ async def _backend_call(device: dict[str, Any], tool: str, arguments: dict[str, 
                     remote_command = _powershell_encoded(command, powershell_exe)
             target_tool = "shell_exec"
             target_args = {
-                "command": shlex.join(base_ssh + [f"{user}@{host}", remote_command]),
+                "command": shlex.join([*base_ssh, f"{user}@{host}", remote_command]),
                 "timeout": timeout + 5,
                 "merge_stderr": True,
             }
@@ -277,7 +281,13 @@ async def _backend_call(device: dict[str, Any], tool: str, arguments: dict[str, 
             target_tool = "shell_spawn"
             target_args = {
                 "command": shlex.join(
-                    base_ssh[:-2] + ["-tt"] + base_ssh[-2:] + [f"{user}@{host}", remote_command]
+                    [
+                        *base_ssh[:-2],
+                        "-tt",
+                        *base_ssh[-2:],
+                        f"{user}@{host}",
+                        remote_command,
+                    ]
                 ),
                 "cols": int(arguments.get("cols", 120)),
                 "rows": int(arguments.get("rows", 40)),
@@ -390,7 +400,11 @@ def _session_record(
 
 
 server_kwargs: dict[str, Any] = {
-    "instructions": "RDCX remote-control gateway. Call list_devices first. Use exec for one-shot commands and session_open/session_write/session_read for interactive workloads."
+    "instructions": (
+        "RDCX remote-control gateway. Call list_devices first. "
+        "Use exec for one-shot commands and session_open/session_write/session_read "
+        "for interactive workloads."
+    )
 }
 if AUTH_ENABLED:
     server_kwargs["auth"] = build_auth_settings(ISSUER, RESOURCE_URL)
@@ -432,7 +446,8 @@ async def list_devices() -> list[dict[str, Any]]:
         try:
             probe = await _backend_call(dev, "server_info", {})
             online = _backend_healthy(probe)
-        except Exception:
+        # A failed backend probe must not mark a device as online.
+        except Exception:  # noqa: BLE001
             online = False
         out.append(
             {
@@ -460,7 +475,8 @@ async def device_status(device_id: str) -> dict[str, Any]:
     try:
         info = await _backend_call(dev, "server_info", {})
         online = _backend_healthy(info)
-    except Exception as exc:
+    # Unknown backend exceptions must fail closed to offline.
+    except Exception as exc:  # noqa: BLE001
         info, online = str(exc), False
     _audit("device_status", tenant_id, client_id, device_id, "ok" if online else "offline")
     return {
@@ -502,7 +518,10 @@ async def exec(device_id: str, command: str, cwd: str = "", timeout: int = 60) -
 async def exec_elevated(
     device_id: str, command: str, cwd: str = "", timeout: int = 60
 ) -> dict[str, Any]:
-    """Run one command through the privileged loopback admin relay or a separately authorized remote administrative identity."""
+    """Run one command through a bounded privileged administrative route.
+
+    The target may use the loopback admin relay or a separately authorized identity.
+    """
     client_id, tenant_id, tenant = await _principal()
     reg = _registry()
     dev = _device_for(reg, tenant, device_id, "elevated_shell")
@@ -720,8 +739,7 @@ async def read_file(device_id: str, path: str, max_bytes: int = MAX_FILE_BYTES) 
             permission_text = str((permission_result.structured_content or {}).get("result", ""))
             if (
                 permission_result.is_error
-                or permission_text.startswith("[DENIED")
-                or permission_text.startswith("[ERROR")
+                or permission_text.startswith(("[DENIED", "[ERROR"))
             ):
                 raise RuntimeError(permission_text or str(permission_result.content))
             data = tmp.read_bytes()
@@ -832,7 +850,8 @@ async def read_file(device_id: str, path: str, max_bytes: int = MAX_FILE_BYTES) 
         escaped = path.replace("'", "''")
         code = (
             f"$p='{escaped}'; $n={limit}; $fs=[IO.File]::OpenRead($p); "
-            "$buf=New-Object byte[] ($n+1); try{$read=$fs.Read($buf,0,$buf.Length)}finally{$fs.Dispose()}; "
+            "$buf=New-Object byte[] ($n+1); "
+            "try{$read=$fs.Read($buf,0,$buf.Length)}finally{$fs.Dispose()}; "
             "$take=[Math]::Min($read,$n); "
             "$slice=if($take -gt 0){[byte[]]$buf[0..($take-1)]}else{[byte[]]@()}; "
             "[Convert]::ToBase64String($slice); "
@@ -896,7 +915,7 @@ async def write_file(
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
-            os.chmod(tmp, 0o660)
+            tmp.chmod(0o660)
             transfer_path = (
                 "/" + path.replace("\\", "/") if re.match(r"^[A-Za-z]:\\", path) else path
             )
@@ -932,7 +951,10 @@ async def write_file(
                     dev,
                     "shell_exec",
                     {
-                        "command": f"python3 -c {shlex.quote(create_code)} {shlex.quote(remote_tmp)}",
+                        "command": (
+                            f"python3 -c {shlex.quote(create_code)} "
+                            f"{shlex.quote(remote_tmp)}"
+                        ),
                         "timeout": 15,
                     },
                 )
@@ -981,7 +1003,10 @@ async def write_file(
                         dev,
                         "shell_exec",
                         {
-                            "command": f"python3 -c {shlex.quote(cleanup_code)} {shlex.quote(remote_tmp)}",
+                            "command": (
+                                f"python3 -c {shlex.quote(cleanup_code)} "
+                                f"{shlex.quote(remote_tmp)}"
+                            ),
                             "timeout": 15,
                         },
                     )
