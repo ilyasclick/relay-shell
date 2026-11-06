@@ -1,8 +1,7 @@
-import asyncio
 import importlib.util
 import os
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,12 +22,19 @@ class LiveLocalBackendTests(unittest.IsolatedAsyncioTestCase):
         }
         tenant = {"devices": ["localhost"]}
         registry = {"devices": {"localhost": dev}}
-        with patch.object(gateway, "_principal", new=AsyncMock(return_value=("test", "test", tenant))), \
-             patch.object(gateway, "_registry", return_value=registry), \
-             patch.object(gateway, "_audit"):
-            result = await gateway.read_file("localhost", "/tmp/rdcx-hardening-large-20261104.txt", 80000)
+        with (
+            patch.object(
+                gateway, "_principal", new=AsyncMock(return_value=("test", "test", tenant))
+            ),
+            patch.object(gateway, "_registry", return_value=registry),
+            patch.object(gateway, "_audit"),
+        ):
+            result = await gateway.read_file(
+                "localhost", "/tmp/rdcx-hardening-large-20261104.txt", 80000
+            )
         self.assertEqual(result["content"], "A" * 75000)
         self.assertFalse(result["truncated"])
+
 
 if __name__ == "__main__":
     unittest.main()
