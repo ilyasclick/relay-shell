@@ -45,12 +45,21 @@ class RouterBackendTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await gateway._backend_call(self.device, "shell_exec", {"command": "show version"})
         with self.assertRaises(PermissionError):
-            await gateway._backend_call(self.device, "ssh_upload", {"local_path": "/tmp/a", "remote_path": "/tmp/b"})
+            await gateway._backend_call(
+                self.device, "ssh_upload", {"local_path": "/tmp/a", "remote_path": "/tmp/b"}
+            )
 
     async def test_arbitrary_terminal_input_denied(self):
-        for data in ("configure terminal", "system configuration save", "show version; reboot", "show startup-config"):
+        for data in (
+            "configure terminal",
+            "system configuration save",
+            "show version; reboot",
+            "show startup-config",
+        ):
             with self.subTest(data=data), self.assertRaises(PermissionError):
-                await gateway._backend_call(self.device, "session_send", {"session_id": "s", "data": data, "enter": True})
+                await gateway._backend_call(
+                    self.device, "session_send", {"session_id": "s", "data": data, "enter": True}
+                )
 
     async def test_shell_spawn_must_use_wrapper(self):
         with self.assertRaises(PermissionError):
@@ -70,9 +79,15 @@ class RouterBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_allowed_read_only_terminal_command(self):
         client = FakeRelay()
         with patch.object(gateway, "Client", return_value=client):
-            result = await gateway._backend_call(self.device, "session_send", {
-                "session_id": "s", "data": "show version", "enter": True,
-            })
+            result = await gateway._backend_call(
+                self.device,
+                "session_send",
+                {
+                    "session_id": "s",
+                    "data": "show version",
+                    "enter": True,
+                },
+            )
         self.assertEqual(result, "sent")
         self.assertEqual(client.calls[0][0], "session_send")
 
