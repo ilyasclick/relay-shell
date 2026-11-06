@@ -4,7 +4,10 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from integrations.rdcx_gateway.binary_files import (
-    CHUNK_LIMIT, decode_payload, parse_read_response, validate_range,
+    CHUNK_LIMIT,
+    decode_payload,
+    parse_read_response,
+    validate_range,
 )
 from integrations.rdcx_gateway.tests.test_gateway import gateway
 
@@ -41,7 +44,11 @@ class BinaryReadGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.tenant = {"devices": ["allowed"]}
         self.registry = {"devices": {"allowed": self.device, "denied": self.device}}
         self.patches = [
-            patch.object(gateway, "_principal", new=AsyncMock(return_value=("client", "tenant", self.tenant))),
+            patch.object(
+                gateway,
+                "_principal",
+                new=AsyncMock(return_value=("client", "tenant", self.tenant)),
+            ),
             patch.object(gateway, "_registry", return_value=self.registry),
             patch.object(gateway, "_audit"),
         ]
@@ -52,7 +59,9 @@ class BinaryReadGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_windows_command_short_read_loop_and_exact_bytes(self):
         raw = bytes([0, 255, 128, 0])
         response = "[exit 0]\n" + base64.b64encode(raw).decode() + "\nTRUNCATED=0\n"
-        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)) as backend:
+        with patch.object(
+            gateway, "_backend_call", new=AsyncMock(return_value=response)
+        ) as backend:
             result = await gateway.read_file_bytes("allowed", r"C:\Temp\fixture.bin", 5, 4)
         self.assertEqual(decode_payload(result["content_base64"]), raw)
         self.assertEqual(result["offset"], 5)
@@ -67,7 +76,11 @@ class BinaryReadGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_posix_and_empty(self):
         self.device["shell_kind"] = "posix"
-        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value="[exit 0]\n\nTRUNCATED=0\n")) as backend:
+        with patch.object(
+            gateway,
+            "_backend_call",
+            new=AsyncMock(return_value="[exit 0]\n\nTRUNCATED=0\n"),
+        ) as backend:
             result = await gateway.read_file_bytes("allowed", "/tmp/fixture.bin", 0, 1)
         self.assertEqual(result["bytes_read"], 0)
         self.assertIn("python3 -c", backend.await_args.args[2]["command"])
@@ -78,9 +91,11 @@ class BinaryReadGatewayTests(unittest.IsolatedAsyncioTestCase):
                 await gateway.read_file_bytes("denied", "/tmp/fixture")
             backend.assert_not_awaited()
         for response in ("[exit 1]\nfail", "[DENIED tier2]", "[TIMEOUT after 20s]"):
-            with patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)):
-                with self.assertRaises(RuntimeError):
-                    await gateway.read_file_bytes("allowed", "/tmp/fixture")
+            with (
+                patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)),
+                self.assertRaises(RuntimeError),
+            ):
+                await gateway.read_file_bytes("allowed", "/tmp/fixture")
 
     async def test_invalid_inputs_do_not_call_backend(self):
         with patch.object(gateway, "_backend_call", new=AsyncMock()) as backend:
