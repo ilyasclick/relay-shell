@@ -35,7 +35,8 @@ def decode_payload(content_base64: str) -> bytes:
 def parse_read_response(output: str, max_bytes: int) -> dict:
     if len(output) > 65536:
         raise RuntimeError("backend output exceeded limit")
-    lines = output.strip().splitlines()
+    # Keep the leading empty line for a valid zero-byte Base64 payload.
+    lines = output.rstrip("\r\n").splitlines()
     if len(lines) != 2 or lines[1] not in ("TRUNCATED=0", "TRUNCATED=1"):
         raise RuntimeError("invalid backend binary read acknowledgement")
     raw = decode_payload(lines[0])
