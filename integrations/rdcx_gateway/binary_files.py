@@ -33,11 +33,22 @@ def decode_payload(content_base64: str) -> bytes:
     return raw
 
 
+_KNOWN_SSH_KEX_WARNINGS = frozenset(
+    {
+        "** WARNING: connection is not using a post-quantum key exchange algorithm.",
+        '** This session may be vulnerable to "store now, decrypt later" attacks.',
+        "** The server may need to be upgraded. See https://openssh.com/pq.html",
+    }
+)
+
+
 def parse_read_response(output: str, max_bytes: int) -> dict:
-    if len(output) > 65536:
+    if not isinstance(output, str) or len(output) > 65536:
         raise RuntimeError("backend output exceeded limit")
-    # Keep the leading empty line for a valid zero-byte Base64 payload.
+    # Preserve the empty payload line and discard only recognized SSH KEX banners.
     lines = output.rstrip("\r\n").splitlines()
+    while lines and lines[0] in _KNOWN_SSH_KEX_WARNINGS:
+        lines.pop(0)
     if len(lines) != 2 or lines[1] not in ("TRUNCATED=0", "TRUNCATED=1"):
         raise RuntimeError("invalid backend binary read acknowledgement")
     raw = decode_payload(lines[0])
