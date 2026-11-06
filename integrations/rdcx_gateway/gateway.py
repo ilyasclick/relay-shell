@@ -529,32 +529,51 @@ async def read_file(device_id: str, path: str, max_bytes: int = MAX_FILE_BYTES) 
     dev = _device_for(reg, tenant, device_id, "files")
     limit = max(1, min(int(max_bytes), MAX_FILE_BYTES))
     if dev.get("backend_type") == "relay-ssh" and dev.get("shell_kind") == "cmd":
-        if any(ch in path for ch in '\"&|<>^%!'):
+        if any(ch in path for ch in '"&|<>^%!'):
             raise ValueError("Windows path contains unsupported shell metacharacters")
-        size_result = await _backend_call(dev, "shell_exec", {"command": f'for %I in ("{path}") do @echo %~zI', "timeout": 15})
-        size_code, size_out = _parse_exec(size_result)
-        if size_code != 0 or not size_out.strip().isdigit():
-            _audit("read_file", tenant_id, client_id, device_id, "error", size_code)
-            return {"device_id": device_id, "path": path, "exit_code": size_code, "error": size_out}
-        size = int(size_out.strip())
-        if size > MAX_FILE_BYTES:
-            raise ValueError(f"remote file exceeds {MAX_FILE_BYTES} bytes")
-        tmp = SPOOL_DIR / ("download-" + secrets.token_hex(12))
-        transfer_path = "/" + path.replace("\\", "/") if re.match(r"^[A-Za-z]:\\", path) else path
-        try:
-            transfer = await _backend_call(dev, "ssh_download", {"remote_path": transfer_path, "local_path": str(tmp), "timeout": 30})
-            if transfer.startswith("[ERROR"):
-                raise RuntimeError(transfer)
-            async with Client(dev["backend_url"]) as worker:
-                permission_result = await worker.call_tool("shell_exec", {"command": f"chmod 660 {shlex.quote(str(tmp))}", "timeout": 10})
-            permission_text = str((permission_result.structured_content or {}).get("result", ""))
-            if permission_result.is_error or permission_text.startswith("[DENIED") or permission_text.startswith("[ERROR"):
-                raise RuntimeError(permission_text or str(permission_result.content))
-            data = tmp.read_bytes()
-        finally:
-            tmp.unlink(missing_ok=True)
+        collected = bytearray()
+        while len(collected) <= limit:
+            chunk_size = min(32768, limit + 1 - len(collected))
+            escaped = path.replace("'", "''")
+            script = (
+                "$ErrorActionPreference='Stop';"
+                "$ProgressPreference='SilentlyContinue';"
+                f"$p='{escaped}';$o={len(collected)};$n={chunk_size};"
+                "$f=[IO.File]::OpenRead($p);"
+                "try{"
+                "$null=$f.Seek($o,[IO.SeekOrigin]::Begin);"
+                "$b=New-Object byte[] $n;$got=0;"
+                "while($got -lt $n){"
+                "$r=$f.Read($b,$got,$n-$got);if($r -eq 0){break};$got+=$r"
+                "}"
+                "}finally{$f.Dispose()};"
+                "Write-Output ('RDCX_BASE64='+[Convert]::ToBase64String($b,0,$got))"
+            )
+            result = await _backend_call(dev, "shell_exec", {
+                "command": _powershell_encoded(script), "timeout": 30,
+            })
+            exit_code, output = _parse_exec(result)
+            if exit_code != 0:
+                _audit("read_file", tenant_id, client_id, device_id, "error", exit_code)
+                return {"device_id": device_id, "path": path, "exit_code": exit_code, "error": output}
+            markers = [
+                line[len("RDCX_BASE64="):] for line in output.splitlines()
+                if line.startswith("RDCX_BASE64=")
+            ]
+            if len(markers) != 1:
+                raise RuntimeError("Windows bounded read returned no unique data marker")
+            chunk = base64.b64decode(markers[0], validate=True) if markers[0] else b""
+            if len(chunk) > chunk_size:
+                raise RuntimeError("Windows file read exceeded chunk size")
+            collected.extend(chunk)
+            if len(chunk) < chunk_size:
+                break
         _audit("read_file", tenant_id, client_id, device_id, "ok", 0)
-        return {"device_id": device_id, "path": path, "content": data[:limit].decode("utf-8", errors="replace"), "truncated": len(data) > limit}
+        return {
+            "device_id": device_id, "path": path,
+            "content": collected[:limit].decode("utf-8", errors="replace"),
+            "truncated": len(collected) > limit,
+        }
     if dev.get("backend_type") == "relay-ssh" and dev.get("shell_kind") not in {"cmd", "powershell"}:
         collected = bytearray()
         while len(collected) <= limit:
