@@ -169,9 +169,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             "** This session may be vulnerable to store-now-decrypt-later attacks.\n"
         )
         response = "[exit 0]\n" + warning + "RDCX_BASE64=" + payload + "\n"
-        with patch.object(
-            gateway, "_backend_call", new=AsyncMock(return_value=response)
-        ):
+        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)):
             result = await gateway.read_file("test-linux", r"C:\Windows\win.ini", 1024)
         self.assertEqual(result["content"], "; test=ok\r\n")
         self.assertFalse(result["truncated"])
