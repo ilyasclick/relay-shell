@@ -161,6 +161,34 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["content"], "hello")
         self.assertFalse(result["truncated"])
 
+    async def test_windows_ssh_warnings_are_ignored_for_verified_payload(self):
+        self.device["shell_kind"] = "cmd"
+        payload = base64.b64encode(b"; test=ok\\r\\n").decode()
+        warning = (
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\\n"
+            "** This session may be vulnerable to store-now-decrypt-later attacks.\\n"
+        )
+        response = "[exit 0]\\n" + warning + "RDCX_BASE64=" + payload + "\\n"
+        with patch.object(
+            gateway, "_backend_call", new=AsyncMock(return_value=response)
+        ):
+            result = await gateway.read_file("test-linux", r"C:\\Windows\\win.ini", 1024)
+        self.assertEqual(result["content"], "; test=ok\\r\\n")
+        self.assertFalse(result["truncated"])
+
+    async def test_windows_read_rejects_warning_without_verified_payload(self):
+        self.device["shell_kind"] = "cmd"
+        response = (
+            "[exit 0]\\n"
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\\n"
+            "92\\n"
+        )
+        with (
+            patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)),
+            self.assertRaisesRegex(RuntimeError, "no unique data marker"),
+        ):
+            await gateway.read_file("test-linux", r"C:\\Windows\\win.ini", 1024)
+
     async def test_windows_bounded_read_reports_remote_errors(self):
         self.device["shell_kind"] = "cmd"
         with patch.object(
