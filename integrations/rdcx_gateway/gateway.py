@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from integrations.rdcx_gateway.binary_files import parse_read_response, validate_range
 from mcp import Client
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -696,6 +697,59 @@ async def session_close(session_id: str) -> dict[str, Any]:
         _save_json(SESSIONS_PATH, sessions)
     _audit("session_close", tenant_id, client_id, rec["device_id"], "ok")
     return {"session_id": session_id, "result": result}
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+    )
+)
+async def read_file_bytes(device_id: str, path: str, offset: int = 0, max_bytes: int = 32768) -> dict[str, Any]:
+    """Read a bounded binary range with exact bytes and tenant ACL."""
+    client_id, tenant_id, tenant = await _principal()
+    dev = _device_for(_registry(), tenant, device_id, "files")
+    validate_range(offset, max_bytes)
+    if not isinstance(path, str) or not path or "\x00" in path:
+        raise ValueError("invalid file path")
+    if offset + max_bytes + 1 > (1 << 53) - 1:
+        raise ValueError("requested range exceeds supported offset")
+    try:
+        if dev.get("shell_kind") in {"cmd", "powershell"}:
+            escaped = path.replace("'", "''")
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$p='{escaped}'; $o={offset}; $n={max_bytes}; "
+                "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite); "
+                "try{$null=$f.Seek($o,[IO.SeekOrigin]::Begin); "
+                "$buf=New-Object byte[] ($n+1); $got=0; "
+                "while($got -lt $buf.Length){"
+                "$r=$f.Read($buf,$got,$buf.Length-$got); "
+                "if($r -eq 0){break}; $got+=$r}; "
+                "$take=[Math]::Min($got,$n); $out=New-Object byte[] $take; "
+                "[Array]::Copy($buf,$out,$take); "
+                "[Console]::WriteLine([Convert]::ToBase64String($out)); "
+                "[Console]::WriteLine('TRUNCATED=' + [int]($got -gt $n))}finally{$f.Dispose()}"
+            )
+            command = _powershell_encoded(script) if dev.get("shell_kind") == "cmd" else script
+        else:
+            script = (
+                "import base64,sys; p=sys.argv[1]; o=int(sys.argv[2]); n=int(sys.argv[3]); "
+                "f=open(p,'rb'); f.seek(o); d=bytearray(); "
+                "exec('while len(d)<n+1:\\n b=f.read(n+1-len(d))\\n if not b: break\\n d.extend(b)'); "
+                "f.close(); print(base64.b64encode(d[:n]).decode('ascii')); "
+                "print('TRUNCATED='+str(int(len(d)>n)))"
+            )
+            command = f"python3 -c {shlex.quote(script)} {shlex.quote(path)} {offset} {max_bytes}"
+        result = await _backend_call(dev, "shell_exec", {"command": command, "timeout": 30})
+        code, output = _parse_exec(result)
+        if code != 0 or result.startswith(("[ERROR", "[DENIED", "[TIMEOUT")):
+            raise RuntimeError("remote binary read failed")
+        payload = parse_read_response(output, max_bytes)
+        _audit("read_file_bytes", tenant_id, client_id, device_id, "ok")
+        return {"device_id": device_id, "path": path, "offset": offset, **payload}
+    except Exception:
+        _audit("read_file_bytes", tenant_id, client_id, device_id, "error")
+        raise
 
 
 @mcp.tool(
