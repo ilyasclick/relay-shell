@@ -52,9 +52,7 @@ class BinaryCodecTests(unittest.TestCase):
 
     def test_unknown_ssh_diagnostics_fail_closed(self):
         ack = "AA==\nTRUNCATED=0"
-        known_warning = (
-            "** WARNING: connection is not using a post-quantum key exchange algorithm."
-        )
+        known_warning = "** WARNING: connection is not using a post-quantum key exchange algorithm."
         for response in (
             "unknown banner\n" + ack,
             "** WARNING: unexpected diagnostic\n" + ack,
@@ -118,10 +116,7 @@ class BinaryReadGatewayTests(unittest.IsolatedAsyncioTestCase):
             "** The server may need to be upgraded. See https://openssh.com/pq.html\n"
         )
         response = (
-            "[exit 0]\n"
-            + warning
-            + base64.b64encode(raw).decode("ascii")
-            + "\nTRUNCATED=0\n"
+            "[exit 0]\n" + warning + base64.b64encode(raw).decode("ascii") + "\nTRUNCATED=0\n"
         )
         with patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)):
             result = await gateway.read_file_bytes("allowed", r"C:\Temp\fixture.bin", 0, 4)
