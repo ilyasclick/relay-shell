@@ -678,6 +678,7 @@ async def write_file(device_id: str, path: str, content: str, mode: str = "rewri
             escaped_path = path.replace("'", "''")
             encoded_data = base64.b64encode(data).decode("ascii")
             script = (
+                "$ErrorActionPreference='Stop'; "
                 f"$p='{escaped_path}'; "
                 f"$d=[Convert]::FromBase64String('{encoded_data}'); "
                 "$f=[IO.File]::Open($p,[IO.FileMode]::Append,[IO.FileAccess]::Write); "
