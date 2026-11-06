@@ -65,6 +65,15 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Fetch and pin the upstream signed v0.3.0 baseline
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --no-write-fetch-head \
+            https://github.com/rmednitzer/relay-shell.git \
+            '+refs/tags/v0.3.0:refs/tags/v0.3.0'
+          test "$(git cat-file -t refs/tags/v0.3.0)" = tag
+          test "$(git rev-parse refs/tags/v0.3.0)" = 3165f2e775b34ce714d324f328a4fb84195a80f5
+          test "$(git rev-parse 'refs/tags/v0.3.0^{}')" = 8972ff3804549a457ec0910e9db1815d0ca4dedb
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         id: build-python
         with:
