@@ -137,11 +137,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             offset, size = map(int, match.groups())
             calls.append((offset, size))
             payload = base64.b64encode(data[offset : offset + size]).decode()
-            return (
-                "[exit 0]\n#< CLIXML\nRDCX_BASE64="
-                + payload
-                + "\n<Objs>progress</Objs>\n"
-            )
+            return "[exit 0]\n#< CLIXML\nRDCX_BASE64=" + payload + "\n<Objs>progress</Objs>\n"
 
         with patch.object(gateway, "_backend_call", new=fake_backend):
             result = await gateway.read_file("test-linux", r"C:\Windows\System32\cmd.exe", 70000)
