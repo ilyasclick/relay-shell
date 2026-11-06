@@ -109,7 +109,54 @@ async def _backend_call(device: dict[str, Any], tool: str, arguments: dict[str, 
     target_tool = tool
     target_args = dict(arguments)
 
-    if backend_type == "relay-ssh" and device.get("ssh_engine") == "openssh":
+    if backend_type == "netcraze-pty":
+        if tool == "server_info":
+            # Authenticate through the same restricted relay used for real sessions.
+            async with Client(device["backend_url"]) as client:
+                spawn = await client.call_tool("shell_spawn", {
+                    "command": device["pty_wrapper"], "cols": 100, "rows": 32,
+                })
+                if spawn.is_error:
+                    raise RuntimeError("router probe spawn refused")
+                sid = _parse_session_id(str((spawn.structured_content or {}).get("result", "")))
+                try:
+                    banner = ""
+                    for _ in range(4):
+                        chunk = await client.call_tool("session_recv", {
+                            "session_id": sid, "timeout": 1.5, "max_bytes": 4096,
+                        })
+                        if chunk.is_error:
+                            raise RuntimeError("router probe receive failed")
+                        banner += str((chunk.structured_content or {}).get("result", ""))
+                        if "(config)>" in banner:
+                            break
+                    if "(config)>" not in banner or not any(
+                        word in banner for word in ("NDMS version", "KeeneticOS version")
+                    ):
+                        raise RuntimeError("router CLI authentication not confirmed")
+                    return "[exit 0]\nROUTER_SSH_AUTH_OK"
+                finally:
+                    await client.call_tool("session_kill", {
+                        "session_id": sid, "signal_name": "TERM", "close": True,
+                    })
+        elif tool == "shell_spawn":
+            if str(arguments.get("command", "")).strip() or str(arguments.get("cwd", "")).strip():
+                raise PermissionError("router session command and cwd overrides forbidden")
+            target_tool = "shell_spawn"
+            target_args = {
+                "command": device["pty_wrapper"],
+                "cols": int(arguments.get("cols", 120)),
+                "rows": int(arguments.get("rows", 40)),
+            }
+        elif tool == "session_send":
+            data = str(arguments.get("data", ""))
+            if not bool(arguments.get("enter", True)) or not re.fullmatch(
+                r"(?:show (?:version|system|interface(?: [A-Za-z0-9_.-]+)?|upnp redirect|device-list|ip arp|ipv6|ssh|sstp-server|\?)|\?|exit)", data
+            ):
+                raise PermissionError("router CLI is restricted to read-only diagnostics")
+        elif tool not in {"session_recv", "session_kill"}:
+            raise PermissionError("router backend permits interactive PTY only")
+    elif backend_type == "relay-ssh" and device.get("ssh_engine") == "openssh":
         host = device["ssh_host"]
         port = str(int(device.get("ssh_port", 22)))
         user = device.get("ssh_user", "")
