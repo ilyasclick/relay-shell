@@ -78,5 +78,32 @@ class BinaryGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("EncodedCommand", backend.await_args.args[2]["command"])
 
 
+    async def test_write_fail_closed_without_remote_side_effects(self):
+        payload = base64.b64encode(b"\\x00\\xff").decode()
+        with patch.object(gateway, "_backend_call", new=AsyncMock()) as backend:
+            for kind in ("posix", "cmd", "powershell"):
+                self.device["shell_kind"] = kind
+                for mode in ("rewrite", "append"):
+                    with self.subTest(kind=kind, mode=mode):
+                        with self.assertRaisesRegex(NotImplementedError, "Binary write disabled"):
+                            await gateway.write_file_bytes("allowed", "/tmp/test.bin", payload, mode)
+            self.device["backend_type"] = "relay-local"
+            with self.assertRaises(NotImplementedError):
+                await gateway.write_file_bytes("allowed", "/tmp/test.bin", payload)
+            backend.assert_not_awaited()
+
+    async def test_write_denied_identity_before_remote_execution(self):
+        with patch.object(gateway, "_backend_call", new=AsyncMock()) as backend:
+            with self.assertRaises(PermissionError):
+                await gateway.write_file_bytes("denied", "/tmp/test.bin", "")
+            backend.assert_not_awaited()
+
+    async def test_write_invalid_payload_rejected_without_remote_execution(self):
+        with patch.object(gateway, "_backend_call", new=AsyncMock()) as backend:
+            with self.assertRaises(ValueError):
+                await gateway.write_file_bytes("allowed", "/tmp/test.bin", "not-base64!")
+            backend.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()
