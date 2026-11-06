@@ -704,7 +704,9 @@ async def session_close(session_id: str) -> dict[str, Any]:
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     )
 )
-async def read_file_bytes(device_id: str, path: str, offset: int = 0, max_bytes: int = 32768) -> dict[str, Any]:
+async def read_file_bytes(
+    device_id: str, path: str, offset: int = 0, max_bytes: int = 32768
+) -> dict[str, Any]:
     """Read a bounded binary range with exact bytes and tenant ACL."""
     client_id, tenant_id, tenant = await _principal()
     dev = _device_for(_registry(), tenant, device_id, "files")
@@ -719,7 +721,8 @@ async def read_file_bytes(device_id: str, path: str, offset: int = 0, max_bytes:
             script = (
                 "$ErrorActionPreference='Stop'; "
                 f"$p='{escaped}'; $o={offset}; $n={max_bytes}; "
-                "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite); "
+                "$f=[IO.File]::Open($p,[IO.FileMode]::Open,"
+                "[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite); "
                 "try{$null=$f.Seek($o,[IO.SeekOrigin]::Begin); "
                 "$buf=New-Object byte[] ($n+1); $got=0; "
                 "while($got -lt $buf.Length){"
@@ -735,7 +738,8 @@ async def read_file_bytes(device_id: str, path: str, offset: int = 0, max_bytes:
             script = (
                 "import base64,sys; p=sys.argv[1]; o=int(sys.argv[2]); n=int(sys.argv[3]); "
                 "f=open(p,'rb'); f.seek(o); d=bytearray(); "
-                "exec('while len(d)<n+1:\\n b=f.read(n+1-len(d))\\n if not b: break\\n d.extend(b)'); "
+                "exec('while len(d)<n+1:\\n b=f.read(n+1-len(d))"
+                "\\n if not b: break\\n d.extend(b)'); "
                 "f.close(); print(base64.b64encode(d[:n]).decode('ascii')); "
                 "print('TRUNCATED='+str(int(len(d)>n)))"
             )
