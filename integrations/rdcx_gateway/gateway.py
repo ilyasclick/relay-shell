@@ -568,12 +568,25 @@ async def confirm_elevated(token: str) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
         raise ValueError("invalid confirmation token format")
     client_id, tenant_id, _tenant = await _principal()
+    if AUTH_ENABLED and not AUTH_SINGLE_CLIENT:
+        # The shared admin relay cannot verify the original OAuth principal.
+        _audit("confirm_elevated", tenant_id, client_id, None, "denied")
+        raise PermissionError("Tier-3 confirmation requires client-bound admin relay identity")
     admin_url = os.getenv("RDCX_GATEWAY_ADMIN_BACKEND_URL", "http://127.0.0.1:8792/mcp")
-    async with Client(admin_url) as client:
-        result = await client.call_tool("operation_confirm", {"token": token})
-    if result.is_error:
-        raise RuntimeError(str(result.content))
-    text = str((result.structured_content or {}).get("result", ""))
+    try:
+        async with Client(admin_url) as client:
+            result = await client.call_tool("operation_confirm", {"token": token})
+        if result.is_error:
+            raise PermissionError("admin relay rejected confirmation")
+        text = str((result.structured_content or {}).get("result", ""))
+        if text != "[armed: re-issue the exact Tier-3 call now to execute it]":
+            raise PermissionError("admin relay did not arm confirmation")
+    except PermissionError:
+        _audit("confirm_elevated", tenant_id, client_id, None, "denied")
+        raise
+    except Exception:
+        _audit("confirm_elevated", tenant_id, client_id, None, "error")
+        raise
     _audit("confirm_elevated", tenant_id, client_id, None, "ok")
     return {"result": text}
 
