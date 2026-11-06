@@ -65,17 +65,24 @@ class GatewayConfirmationTests(IsolatedAsyncioTestCase):
 
     async def test_valid_fixture_is_forwarded_only_to_admin_and_audited(self):
         token = "FAKE_token_0123456789ABCDEF"
-        response = SimpleNamespace(is_error=False, structured_content={
-            "result": "[armed: re-issue the exact Tier-3 call now to execute it]"
-        })
+        response = SimpleNamespace(
+            is_error=False,
+            structured_content={
+                "result": "[armed: re-issue the exact Tier-3 call now to execute it]"
+            },
+        )
         mock_client = AsyncMock()
         mock_client.call_tool.return_value = response
         context = AsyncMock()
         context.__aenter__.return_value = mock_client
         with (
-            patch.object(gateway, "_principal", new=AsyncMock(return_value=(
-                "oauth-client-A", "tenant-A", {"devices": ["device-A"]}
-            ))),
+            patch.object(
+                gateway,
+                "_principal",
+                new=AsyncMock(
+                    return_value=("oauth-client-A", "tenant-A", {"devices": ["device-A"]})
+                ),
+            ),
             patch.object(gateway, "Client", return_value=context) as factory,
             patch.object(gateway, "_audit") as audit,
         ):
@@ -92,9 +99,11 @@ class GatewayConfirmationTests(IsolatedAsyncioTestCase):
         context = AsyncMock()
         context.__aenter__.return_value = mock_client
         with (
-            patch.object(gateway, "_principal", new=AsyncMock(return_value=(
-                "oauth-client-B", "tenant-B", {"devices": []}
-            ))),
+            patch.object(
+                gateway,
+                "_principal",
+                new=AsyncMock(return_value=("oauth-client-B", "tenant-B", {"devices": []})),
+            ),
             patch.object(gateway, "Client", return_value=context),
             patch.object(gateway, "_audit") as audit,
             patch.object(gateway, "_backend_call") as execution,
