@@ -24,13 +24,14 @@ class BrokerIsolationTests(TestCase):
         self.principal_b = "oauth-client-B"
 
     def test_different_authenticated_principal_cannot_arm_or_consume(self):
-        token = self.broker.plan("shell_exec", "device-A:cmd:cwd:timeout", self.principal_a).token
+        operation = "device-A:cmd:cwd:timeout"
+        token = self.broker.plan("shell_exec", operation, self.principal_a).token
         self.assertFalse(self.broker.arm(token, self.principal_b))
-        self.assertFalse(self.broker.consume("shell_exec", "device-A:cmd:cwd:timeout", self.principal_b))
+        self.assertFalse(self.broker.consume("shell_exec", operation, self.principal_b))
         self.assertTrue(self.broker.arm(token, self.principal_a))
-        self.assertFalse(self.broker.consume("shell_exec", "device-A:cmd:cwd:timeout", self.principal_b))
-        self.assertTrue(self.broker.consume("shell_exec", "device-A:cmd:cwd:timeout", self.principal_a))
-        self.assertFalse(self.broker.consume("shell_exec", "device-A:cmd:cwd:timeout", self.principal_a))
+        self.assertFalse(self.broker.consume("shell_exec", operation, self.principal_b))
+        self.assertTrue(self.broker.consume("shell_exec", operation, self.principal_a))
+        self.assertFalse(self.broker.consume("shell_exec", operation, self.principal_a))
 
     def test_exact_operation_binding_and_replay(self):
         original = "device-A:command:cwd=/safe:timeout=60"
