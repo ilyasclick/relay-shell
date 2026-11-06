@@ -577,8 +577,11 @@ async def confirm_elevated(token: str) -> dict[str, Any]:
         text = str((result.structured_content or {}).get("result", ""))
         if text != "[armed: re-issue the exact Tier-3 call now to execute it]":
             raise PermissionError("admin relay did not arm confirmation")
-    except Exception:
+    except PermissionError:
         _audit("confirm_elevated", tenant_id, client_id, None, "denied")
+        raise
+    except Exception:
+        _audit("confirm_elevated", tenant_id, client_id, None, "error")
         raise
     _audit("confirm_elevated", tenant_id, client_id, None, "ok")
     return {"result": text}
