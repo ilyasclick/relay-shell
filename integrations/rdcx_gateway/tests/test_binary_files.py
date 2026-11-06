@@ -11,11 +11,11 @@ from integrations.rdcx_gateway.tests.test_gateway import gateway
 
 class BinaryCodecTests(unittest.TestCase):
     def test_exact_bytes(self):
-        raw = b"\\x00\\xff\\x80\\x00"
+        raw = b"\x00\xff\x80\x00"
         self.assertEqual(decode_payload(base64.b64encode(raw).decode()), raw)
 
     def test_bad_base64(self):
-        for value in ("!!!!", "Zg", "Zg==\\n", "Zh==", "Zg===", "é", "A" * 44000):
+        for value in ("!!!!", "Zg", "Zg==\n", "Zh==", "Zg===", "é", "A" * 44000):
             with self.subTest(value=value[:20]), self.assertRaises(ValueError):
                 decode_payload(value)
 
@@ -26,14 +26,14 @@ class BinaryCodecTests(unittest.TestCase):
         validate_range(0, CHUNK_LIMIT)
 
     def test_truncation_and_digest(self):
-        raw = b"\\x00\\xff"
+        raw = b"\x00\xff"
         encoded = base64.b64encode(raw).decode()
-        out = parse_read_response(encoded + "\\nTRUNCATED=1", 2)
+        out = parse_read_response(encoded + "\nTRUNCATED=1", 2)
         self.assertEqual(out["bytes_read"], 2)
         self.assertEqual(out["content_sha256"], hashlib.sha256(raw).hexdigest())
         self.assertTrue(out["truncated"])
         with self.assertRaises(RuntimeError):
-            parse_read_response(encoded + "\\nTRUNCATED=0", 1)
+            parse_read_response(encoded + "\nTRUNCATED=0", 1)
 
 
 class BinaryGatewayTests(unittest.IsolatedAsyncioTestCase):
@@ -51,8 +51,8 @@ class BinaryGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(p.stop)
 
     async def test_read_binary(self):
-        raw = b"\\x00\\xff"
-        response = "[exit 0]\\n" + base64.b64encode(raw).decode() + "\\nTRUNCATED=0\\n"
+        raw = b"\x00\xff"
+        response = "[exit 0]\n" + base64.b64encode(raw).decode() + "\nTRUNCATED=0\n"
         with patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)) as backend:
             out = await gateway.read_file_bytes("allowed", "/tmp/a", 0, 2)
         self.assertEqual(out["content_base64"], base64.b64encode(raw).decode())
@@ -66,14 +66,14 @@ class BinaryGatewayTests(unittest.IsolatedAsyncioTestCase):
             backend.assert_not_awaited()
 
     async def test_remote_failure_closed(self):
-        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value="[exit 1]\\nerror")):
+        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value="[exit 1]\nerror")):
             with self.assertRaises(RuntimeError):
                 await gateway.read_file_bytes("allowed", "/tmp/a")
 
     async def test_windows_read_command(self):
         self.device["shell_kind"] = "cmd"
-        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value="[exit 0]\\n\\nTRUNCATED=0\\n")) as backend:
-            result = await gateway.read_file_bytes("allowed", r"C:\\Temp\\a.bin", 0, 1)
+        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value="[exit 0]\n\nTRUNCATED=0\n")) as backend:
+            result = await gateway.read_file_bytes("allowed", r"C:\Temp\\a.bin", 0, 1)
         self.assertEqual(result["bytes_read"], 0)
         self.assertIn("EncodedCommand", backend.await_args.args[2]["command"])
 
