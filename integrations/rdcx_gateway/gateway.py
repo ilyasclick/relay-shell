@@ -737,10 +737,7 @@ async def read_file(device_id: str, path: str, max_bytes: int = MAX_FILE_BYTES) 
                     "shell_exec", {"command": f"chmod 660 {shlex.quote(str(tmp))}", "timeout": 10}
                 )
             permission_text = str((permission_result.structured_content or {}).get("result", ""))
-            if (
-                permission_result.is_error
-                or permission_text.startswith(("[DENIED", "[ERROR"))
-            ):
+            if permission_result.is_error or permission_text.startswith(("[DENIED", "[ERROR")):
                 raise RuntimeError(permission_text or str(permission_result.content))
             data = tmp.read_bytes()
         finally:
@@ -952,8 +949,7 @@ async def write_file(
                     "shell_exec",
                     {
                         "command": (
-                            f"python3 -c {shlex.quote(create_code)} "
-                            f"{shlex.quote(remote_tmp)}"
+                            f"python3 -c {shlex.quote(create_code)} {shlex.quote(remote_tmp)}"
                         ),
                         "timeout": 15,
                     },
@@ -1004,8 +1000,7 @@ async def write_file(
                         "shell_exec",
                         {
                             "command": (
-                                f"python3 -c {shlex.quote(cleanup_code)} "
-                                f"{shlex.quote(remote_tmp)}"
+                                f"python3 -c {shlex.quote(cleanup_code)} {shlex.quote(remote_tmp)}"
                             ),
                             "timeout": 15,
                         },
