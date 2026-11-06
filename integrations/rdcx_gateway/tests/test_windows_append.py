@@ -40,7 +40,7 @@ class WindowsAppendTests(unittest.IsolatedAsyncioTestCase):
         async def backend(_device, tool, arguments):
             self.assertEqual(tool, "shell_exec")
             commands.append(arguments["command"])
-            return "[exit 0]\\nRDCX_APPENDED=6\\n"
+            return "[exit 0]\nRDCX_APPENDED=6\n"
 
         with patch.object(gateway, "_backend_call", new=backend):
             result = await gateway.write_file("win-test", "C:\\\\Temp\\\\test.txt", "ééé", "append")
@@ -53,11 +53,11 @@ class WindowsAppendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(base64.b64encode("ééé".encode()).decode(), script)
 
     async def test_append_rejects_missing_confirmation(self):
-        with patch.object(
-            gateway, "_backend_call", new=AsyncMock(return_value="[exit 0]\\n")
+        with (
+            patch.object(gateway, "_backend_call", new=AsyncMock(return_value="[exit 0]\n")),
+            self.assertRaises(RuntimeError),
         ):
-            with self.assertRaises(RuntimeError):
-                await gateway.write_file("win-test", "C:\\\\Temp\\\\test.txt", "x", "append")
+            await gateway.write_file("win-test", "C:\\Temp\\test.txt", "x", "append")
 
     async def test_append_rejects_oversize_before_backend(self):
         with patch.object(gateway, "_backend_call", new=AsyncMock()) as backend:
