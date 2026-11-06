@@ -34,6 +34,35 @@ class BinaryCodecTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises((ValueError, RuntimeError)):
                 parse_read_response(value, 1)
 
+    def test_known_ssh_kex_warnings_preserve_exact_binary_data(self):
+        warnings = (
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\r\n"
+            '** This session may be vulnerable to "store now, decrypt later" attacks.\r\n'
+            "** The server may need to be upgraded. See https://openssh.com/pq.html\r\n"
+        )
+        raw = bytes((0, 255, 128, 0, 13, 10))
+        encoded = base64.b64encode(raw).decode("ascii")
+        result = parse_read_response(warnings + encoded + "\r\nTRUNCATED=1\r\n", len(raw))
+        self.assertEqual(decode_payload(result["content_base64"]), raw)
+        self.assertEqual(result["content_sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertTrue(result["truncated"])
+        empty = parse_read_response(warnings + "\r\nTRUNCATED=0\r\n", 1)
+        self.assertEqual(empty["bytes_read"], 0)
+        self.assertFalse(empty["truncated"])
+
+    def test_unknown_ssh_diagnostics_fail_closed(self):
+        ack = "AA==\nTRUNCATED=0"
+        known_warning = "** WARNING: connection is not using a post-quantum key exchange algorithm."
+        for response in (
+            "unknown banner\n" + ack,
+            "** WARNING: unexpected diagnostic\n" + ack,
+            ack + "\n" + known_warning,
+            known_warning,
+            "AA==\nAA==\nTRUNCATED=0",
+        ):
+            with self.subTest(response=response), self.assertRaises(RuntimeError):
+                parse_read_response(response, 1)
+
     def test_range_and_noncanonical_base64(self):
         for offset, size in ((-1, 1), (1 << 53, 1), (0, 0), (0, CHUNK_LIMIT + 1), (True, 1)):
             with self.assertRaises(ValueError):
@@ -78,6 +107,21 @@ class BinaryReadGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("if($r -eq 0){break}", script)
         self.assertIn("$got+=$r", script)
         self.assertIn("New-Object byte[] ($n+1)", script)
+
+    async def test_windows_binary_read_with_ssh_kex_warnings(self):
+        raw = bytes((0, 255, 128, 0))
+        warning = (
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+            '** This session may be vulnerable to "store now, decrypt later" attacks.\n'
+            "** The server may need to be upgraded. See https://openssh.com/pq.html\n"
+        )
+        response = (
+            "[exit 0]\n" + warning + base64.b64encode(raw).decode("ascii") + "\nTRUNCATED=0\n"
+        )
+        with patch.object(gateway, "_backend_call", new=AsyncMock(return_value=response)):
+            result = await gateway.read_file_bytes("allowed", r"C:\Temp\fixture.bin", 0, 4)
+        self.assertEqual(decode_payload(result["content_base64"]), raw)
+        self.assertFalse(result["truncated"])
 
     async def test_posix_and_empty(self):
         self.device["shell_kind"] = "posix"
