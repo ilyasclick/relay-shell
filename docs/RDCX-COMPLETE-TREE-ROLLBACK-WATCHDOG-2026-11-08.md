@@ -23,3 +23,10 @@ systemd unit, modify the production gateway, restart services, touch ACLs or
 network rules, or provide an out-of-band recovery channel. Production rollout
 remains blocked until this logic is independently rehearsed against the actual
 staging runtime and a separate recovery path is available.
+
+
+## Independent staging rehearsal
+
+The rollback logic was independently exercised on `ubuntu-code-tdrezerv` in an unprivileged disposable directory with a loopback HTTP service. The candidate service returned `candidate`; after complete-tree swap, service restart and postflight check, the restored service returned `stable`. A subsequent invocation with the acceptance marker returned no-op.
+
+This validates the rollback mechanism and service lifecycle. Full custom-gateway dependency installation and connector acceptance remain outside this rehearsal because the guarded relay correctly refuses the required Tier-2 package-install action without separate approval.
