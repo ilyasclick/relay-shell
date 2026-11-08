@@ -6,7 +6,6 @@ import contextlib
 import fcntl
 import hashlib
 import json
-import os
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator
@@ -90,9 +89,9 @@ def rollback_tree(
             shutil.copytree(backup_root, staged, symlinks=False)
             if tree_manifest(staged) != baseline_manifest:
                 raise RollbackRefused("staged backup failed hash verification")
-            os.replace(live_root, quarantine)
+            live_root.replace(quarantine)
             moved = True
-            os.replace(staged, live_root)
+            staged.replace(live_root)
             if tree_manifest(live_root) != baseline_manifest:
                 raise RollbackRefused("post-rollback tree failed hash verification")
             if postflight is not None and not postflight(live_root):
@@ -100,7 +99,7 @@ def rollback_tree(
             return "restored"
         except Exception:
             if moved and not live_root.exists() and quarantine.exists():
-                os.replace(quarantine, live_root)
+                quarantine.replace(live_root)
             raise
         finally:
             shutil.rmtree(staging_parent, ignore_errors=True)
