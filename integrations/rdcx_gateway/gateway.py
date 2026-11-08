@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from integrations.rdcx_gateway.binary_files import parse_read_response, validate_range
+from integrations.rdcx_gateway.tier3_binding import enforce_single_client_binding
 from mcp import Client
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -99,6 +100,27 @@ async def _principal() -> tuple[str, str, dict[str, Any]]:
     if tenant is None:
         raise PermissionError("tenant is not configured")
     return client_id, tenant_id, tenant
+
+
+async def _require_tier3_binding(
+    tool: str, client_id: str, tenant_id: str, device_id: str | None = None
+) -> None:
+    """Fail closed unless Tier-3 is restricted to one verified OAuth client."""
+    if not AUTH_ENABLED:
+        return
+    async with _state_lock:
+        mappings = _load_json(CLIENTS_PATH, {})
+    try:
+        enforce_single_client_binding(
+            auth_enabled=AUTH_ENABLED,
+            single_client_mode=AUTH_SINGLE_CLIENT,
+            client_id=client_id,
+            tenant_id=tenant_id,
+            client_tenants=mappings,
+        )
+    except PermissionError:
+        _audit(tool, tenant_id, client_id, device_id, "denied")
+        raise
 
 
 def _device_for(
@@ -524,6 +546,7 @@ async def exec_elevated(
     The target may use the loopback admin relay or a separately authorized identity.
     """
     client_id, tenant_id, tenant = await _principal()
+    await _require_tier3_binding("exec_elevated", client_id, tenant_id, device_id)
     reg = _registry()
     dev = _device_for(reg, tenant, device_id, "elevated_shell")
     admin_dev = dict(dev)
@@ -568,12 +591,22 @@ async def confirm_elevated(token: str) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
         raise ValueError("invalid confirmation token format")
     client_id, tenant_id, _tenant = await _principal()
+    await _require_tier3_binding("confirm_elevated", client_id, tenant_id)
     admin_url = os.getenv("RDCX_GATEWAY_ADMIN_BACKEND_URL", "http://127.0.0.1:8792/mcp")
-    async with Client(admin_url) as client:
-        result = await client.call_tool("operation_confirm", {"token": token})
-    if result.is_error:
-        raise RuntimeError(str(result.content))
-    text = str((result.structured_content or {}).get("result", ""))
+    try:
+        async with Client(admin_url) as client:
+            result = await client.call_tool("operation_confirm", {"token": token})
+        if result.is_error:
+            raise PermissionError("admin relay rejected confirmation")
+        text = str((result.structured_content or {}).get("result", ""))
+        if text != "[armed: re-issue the exact Tier-3 call now to execute it]":
+            raise PermissionError("admin relay did not arm confirmation")
+    except PermissionError:
+        _audit("confirm_elevated", tenant_id, client_id, None, "denied")
+        raise
+    except Exception:
+        _audit("confirm_elevated", tenant_id, client_id, None, "error")
+        raise
     _audit("confirm_elevated", tenant_id, client_id, None, "ok")
     return {"result": text}
 
