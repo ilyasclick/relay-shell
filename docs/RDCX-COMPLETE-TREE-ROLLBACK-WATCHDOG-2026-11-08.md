@@ -27,6 +27,8 @@ staging runtime and a separate recovery path is available.
 
 ## Independent staging rehearsal
 
-The rollback logic was independently exercised on `ubuntu-code-tdrezerv` in an unprivileged disposable directory with a loopback HTTP service. The candidate service returned `candidate`; after complete-tree swap, service restart and postflight check, the restored service returned `stable`. A subsequent invocation with the acceptance marker returned no-op.
+The complete custom gateway was independently exercised on `ubuntu-code-tdrezerv` in a disposable user-owned tree. Its staging virtual environment was installed under the same disposable directory, with authentication disabled and temporary registry, session, client and audit paths.
 
-This validates the rollback mechanism and service lifecycle. Full custom-gateway dependency installation and connector acceptance remain outside this rehearsal because the guarded relay correctly refuses the required Tier-2 package-install action without separate approval.
+The candidate gateway initialized MCP, exposed 13 tools and returned an empty staging inventory. The complete-tree rollback then quarantined the candidate, installed the stable tree, restarted the gateway from the restored tree and repeated the MCP probe successfully: 13 tools and an empty staging inventory. A subsequent invocation with the acceptance marker returned no-op, and no gateway process remained after cleanup.
+
+This validates the rollback mechanism, gateway startup, MCP readiness, service restart and postflight path. It does not qualify OAuth connector acceptance or production deployment.
