@@ -50,7 +50,9 @@ class RollbackWatchdogTests(TestCase):
 
     def test_restores_complete_tree_and_keeps_candidate_quarantined(self):
         self.assertEqual(
-            self.call_rollback(postflight=lambda root: tree_manifest(root) == self.baseline),
+            self.call_rollback(
+                postflight=lambda root: tree_manifest(root) == self.baseline
+            ),
             "restored",
         )
         self.assertEqual(tree_manifest(self.live), self.baseline)
