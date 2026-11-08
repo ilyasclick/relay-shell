@@ -35,9 +35,9 @@ def tree_manifest(root: Path) -> dict[str, str]:
 
 def manifest_digest(manifest: dict[str, str]) -> str:
     """Return a stable digest for a complete release-tree manifest."""
-    payload = json.dumps(
-        manifest, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ).encode(_MANIFEST_ENCODING)
+    payload = json.dumps(manifest, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
+        _MANIFEST_ENCODING
+    )
     return hashlib.sha256(payload).hexdigest()
 
 
