@@ -395,7 +395,7 @@ async def _probe_device_health(device: dict[str, Any]) -> tuple[str, bool]:
     attempts = max(1, min(3, int(device.get("health_probe_attempts", 1))))
     timeout = max(5, min(25, int(device.get("health_probe_timeout", 15))))
     info = ""
-    for attempt in range(attempts):
+    for _attempt in range(attempts):
         try:
             info = await _backend_call(device, "server_info", {"timeout": timeout})
             healthy = _backend_healthy(info)
@@ -403,7 +403,7 @@ async def _probe_device_health(device: dict[str, Any]) -> tuple[str, bool]:
                 healthy = healthy and "RDCX_SSH_STATUS_OK" in info
             if healthy:
                 return info, True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             info = str(exc)
     return info, False
 
@@ -474,8 +474,11 @@ async def list_devices() -> list[dict[str, Any]]:
         async with semaphore:
             _, online = await _probe_device_health(dev)
         return {
-            "id": device_id, "display_name": dev["display_name"], "os": dev["os"],
-            "online": online, "capabilities": dev.get("capabilities", []),
+            "id": device_id,
+            "display_name": dev["display_name"],
+            "os": dev["os"],
+            "online": online,
+            "capabilities": dev.get("capabilities", []),
         }
 
     out = await asyncio.gather(*(probe_one(device_id) for device_id in tenant.get("devices", [])))

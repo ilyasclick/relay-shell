@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -12,9 +13,7 @@ class HealthReconciliationTests(unittest.IsolatedAsyncioTestCase):
             "health_probe_attempts": 2,
             "health_probe_timeout": 10,
         }
-        with patch.object(
-            gateway, "_backend_call", new_callable=AsyncMock
-        ) as backend:
+        with patch.object(gateway, "_backend_call", new_callable=AsyncMock) as backend:
             backend.side_effect = [
                 "[TIMEOUT] temporary failure",
                 "[exit 0]\nRDCX_SSH_STATUS_OK",
@@ -26,26 +25,26 @@ class HealthReconciliationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(backend.await_args_list[0].args[2], {"timeout": 10})
 
     async def test_openssh_no_marker_is_offline(self):
-        with patch.object(
-            gateway, "_backend_call", new_callable=AsyncMock
-        ) as backend:
+        with patch.object(gateway, "_backend_call", new_callable=AsyncMock) as backend:
             backend.return_value = "[exit 0]\nno positive marker"
-            _, online = await gateway._probe_device_health({
-                "ssh_engine": "openssh",
-                "health_probe_attempts": 1,
-            })
+            _, online = await gateway._probe_device_health(
+                {
+                    "ssh_engine": "openssh",
+                    "health_probe_attempts": 1,
+                }
+            )
             self.assertFalse(online)
             self.assertEqual(backend.await_count, 1)
 
     async def test_retries_bounded_and_fail_closed(self):
-        with patch.object(
-            gateway, "_backend_call", new_callable=AsyncMock
-        ) as backend:
+        with patch.object(gateway, "_backend_call", new_callable=AsyncMock) as backend:
             backend.side_effect = RuntimeError("unreachable")
-            _, online = await gateway._probe_device_health({
-                "health_probe_attempts": 100,
-                "health_probe_timeout": 999,
-            })
+            _, online = await gateway._probe_device_health(
+                {
+                    "health_probe_attempts": 100,
+                    "health_probe_timeout": 999,
+                }
+            )
             self.assertFalse(online)
             self.assertEqual(backend.await_count, 3)
             self.assertEqual(backend.await_args_list[0].args[2], {"timeout": 25})
@@ -71,8 +70,10 @@ class HealthReconciliationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(gateway, "_backend_call", new_callable=AsyncMock) as backend,
         ):
             backend.side_effect = [
-                "no marker", "RDCX_SSH_STATUS_OK",
-                "no marker", "RDCX_SSH_STATUS_OK",
+                "no marker",
+                "RDCX_SSH_STATUS_OK",
+                "no marker",
+                "RDCX_SSH_STATUS_OK",
             ]
             inventory = await gateway.list_devices()
             status = await gateway.device_status("fixture-win")
