@@ -185,7 +185,7 @@ async def _backend_call(device: dict[str, Any], tool: str, arguments: dict[str, 
             data = str(arguments.get("data", ""))
             if not bool(arguments.get("enter", True)) or not re.fullmatch(
                 r"(?:show (?:version|system|interface(?: [A-Za-z0-9_.-]+)?"
-                r"|upnp redirect|device-list|ip arp|ipv6|ssh|sstp-server|\?)|\?|exit)",
+                r"|upnp redirect|log 100 once|device-list|ip arp|ipv6|ssh|sstp-server|\?)|\?|exit)",
                 data,
             ):
                 raise PermissionError("router CLI is restricted to read-only diagnostics")
@@ -244,11 +244,19 @@ async def _backend_call(device: dict[str, Any], tool: str, arguments: dict[str, 
         elif tool in {"shell_exec", "server_info"}:
             timeout = int(arguments.get("timeout", 15))
             if tool == "server_info":
-                remote_command = "cmd.exe /d /s /c echo RDCX_SSH_STATUS_OK"
+                remote_command = (
+                    ':put "RDCX_SSH_STATUS_OK"'
+                    if device.get("shell_kind") == "routeros"
+                    else "cmd.exe /d /s /c echo RDCX_SSH_STATUS_OK"
+                )
             else:
                 command = str(arguments.get("command", ""))
                 cwd = str(arguments.get("cwd", ""))
-                if device.get("shell_kind") == "cmd":
+                if device.get("shell_kind") == "routeros":
+                    if cwd or not command.strip():
+                        raise ValueError("RouterOS requires a nonempty command without cwd")
+                    remote_command = command
+                elif device.get("shell_kind") == "cmd":
                     if cwd:
                         safe_cwd = cwd.replace('"', '""')
                         command = f'cd /d "{safe_cwd}" && {command}'
@@ -382,6 +390,24 @@ def _backend_healthy(result: str) -> bool:
     return exit_code in (None, 0)
 
 
+async def _probe_device_health(device: dict[str, Any]) -> tuple[str, bool]:
+    """Check live health, retrying only when explicitly configured for a device."""
+    attempts = max(1, min(3, int(device.get("health_probe_attempts", 1))))
+    timeout = max(5, min(25, int(device.get("health_probe_timeout", 15))))
+    info = ""
+    for attempt in range(attempts):
+        try:
+            info = await _backend_call(device, "server_info", {"timeout": timeout})
+            healthy = _backend_healthy(info)
+            if device.get("ssh_engine") == "openssh":
+                healthy = healthy and "RDCX_SSH_STATUS_OK" in info
+            if healthy:
+                return info, True
+        except Exception as exc:
+            info = str(exc)
+    return info, False
+
+
 def _parse_session_id(result: str) -> str:
     m = re.search(r"\bsession\s+([A-Za-z0-9_-]+)\s+started\b", result)
     if not m:
@@ -441,26 +467,20 @@ async def list_devices() -> list[dict[str, Any]]:
     """List devices granted to the authenticated tenant with stable IDs and capabilities."""
     client_id, tenant_id, tenant = await _principal()
     reg = _registry()
-    out = []
-    for device_id in tenant.get("devices", []):
+    semaphore = asyncio.Semaphore(3)
+
+    async def probe_one(device_id: str) -> dict[str, Any]:
         dev = reg["devices"][device_id]
-        try:
-            probe = await _backend_call(dev, "server_info", {})
-            online = _backend_healthy(probe)
-        # A failed backend probe must not mark a device as online.
-        except Exception:  # noqa: BLE001
-            online = False
-        out.append(
-            {
-                "id": device_id,
-                "display_name": dev["display_name"],
-                "os": dev["os"],
-                "online": online,
-                "capabilities": dev.get("capabilities", []),
-            }
-        )
+        async with semaphore:
+            _, online = await _probe_device_health(dev)
+        return {
+            "id": device_id, "display_name": dev["display_name"], "os": dev["os"],
+            "online": online, "capabilities": dev.get("capabilities", []),
+        }
+
+    out = await asyncio.gather(*(probe_one(device_id) for device_id in tenant.get("devices", [])))
     _audit("list_devices", tenant_id, client_id, None, "ok")
-    return out
+    return list(out)
 
 
 @mcp.tool(
@@ -473,12 +493,7 @@ async def device_status(device_id: str) -> dict[str, Any]:
     client_id, tenant_id, tenant = await _principal()
     reg = _registry()
     dev = _device_for(reg, tenant, device_id)
-    try:
-        info = await _backend_call(dev, "server_info", {})
-        online = _backend_healthy(info)
-    # Unknown backend exceptions must fail closed to offline.
-    except Exception as exc:  # noqa: BLE001
-        info, online = str(exc), False
+    info, online = await _probe_device_health(dev)
     _audit("device_status", tenant_id, client_id, device_id, "ok" if online else "offline")
     return {
         "id": device_id,
@@ -568,12 +583,32 @@ async def confirm_elevated(token: str) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
         raise ValueError("invalid confirmation token format")
     client_id, tenant_id, _tenant = await _principal()
+    if AUTH_ENABLED:
+        async with _state_lock:
+            mappings = _load_json(CLIENTS_PATH, {})
+        if (
+            not AUTH_SINGLE_CLIENT
+            or not isinstance(mappings, dict)
+            or len(mappings) != 1
+            or mappings.get(client_id) != tenant_id
+        ):
+            _audit("confirm_elevated", tenant_id, client_id, None, "denied")
+            raise PermissionError("Tier-3 confirmation requires verified single-client mode")
     admin_url = os.getenv("RDCX_GATEWAY_ADMIN_BACKEND_URL", "http://127.0.0.1:8792/mcp")
-    async with Client(admin_url) as client:
-        result = await client.call_tool("operation_confirm", {"token": token})
-    if result.is_error:
-        raise RuntimeError(str(result.content))
-    text = str((result.structured_content or {}).get("result", ""))
+    try:
+        async with Client(admin_url) as client:
+            result = await client.call_tool("operation_confirm", {"token": token})
+        if result.is_error:
+            raise PermissionError("admin relay rejected confirmation")
+        text = str((result.structured_content or {}).get("result", ""))
+        if text != "[armed: re-issue the exact Tier-3 call now to execute it]":
+            raise PermissionError("admin relay did not arm confirmation")
+    except PermissionError:
+        _audit("confirm_elevated", tenant_id, client_id, None, "denied")
+        raise
+    except Exception:
+        _audit("confirm_elevated", tenant_id, client_id, None, "error")
+        raise
     _audit("confirm_elevated", tenant_id, client_id, None, "ok")
     return {"result": text}
 
@@ -719,7 +754,7 @@ async def read_file_bytes(
         if dev.get("shell_kind") in {"cmd", "powershell"}:
             escaped = path.replace("'", "''")
             script = (
-                "$ErrorActionPreference='Stop'; "
+                "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "
                 f"$p='{escaped}'; $o={offset}; $n={max_bytes}; "
                 "$f=[IO.File]::Open($p,[IO.FileMode]::Open,"
                 "[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite); "
@@ -788,11 +823,20 @@ async def read_file(device_id: str, path: str, max_bytes: int = MAX_FILE_BYTES) 
                 "}finally{$f.Dispose()};"
                 "Write-Output ('RDCX_BASE64='+[Convert]::ToBase64String($b,0,$got))"
             )
-            result = await _backend_call(
-                dev,
-                "shell_exec",
-                {"command": _powershell_encoded(script), "timeout": 30},
-            )
+            try:
+                result = await _backend_call(
+                    dev,
+                    "shell_exec",
+                    {"command": _powershell_encoded(script), "timeout": 30},
+                )
+            except RuntimeError:
+                _audit("read_file", tenant_id, client_id, device_id, "error", 1)
+                return {
+                    "device_id": device_id,
+                    "path": path,
+                    "exit_code": 1,
+                    "error": "Windows remote file read failed",
+                }
             exit_code, output = _parse_exec(result)
             if exit_code != 0:
                 _audit("read_file", tenant_id, client_id, device_id, "error", exit_code)
